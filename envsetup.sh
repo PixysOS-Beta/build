@@ -2077,3 +2077,9 @@ set_global_paths
 source_vendorsetup
 addcompletions
 
+export ANDROID_BUILD_TOP=$(gettop)
+
+function repopick() {
+    T=$(gettop)
+    $T/vendor/pixys/build/tools/repopick.py $@
+}
