@@ -150,9 +150,9 @@ def WriteFullOTAPackage(input_zip, output_file):
   assert HasRecoveryPatch(input_zip, info_dict=OPTIONS.info_dict)
 
   # Assertions (e.g. downgrade check, device properties check).
-  ts = target_info.GetBuildProp("ro.build.date.utc")
-  ts_text = target_info.GetBuildProp("ro.build.date")
-  script.AssertOlderBuild(ts, ts_text)
+  #ts = target_info.GetBuildProp("ro.build.date.utc")
+  #ts_text = target_info.GetBuildProp("ro.build.date")
+  #script.AssertOlderBuild(ts, ts_text)
 
   target_info.WriteDeviceAssertions(script, OPTIONS.oem_no_mount)
   device_specific.FullOTA_Assertions()
@@ -227,7 +227,8 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
     dynamic_partitions_diff = common.DynamicPartitionsDifference(
         info_dict=OPTIONS.info_dict,
         block_diffs=block_diff_dict.values(),
-        progress_dict=progress_dict)
+        progress_dict=progress_dict,
+        build_without_vendor=(not HasPartition(input_zip, "vendor")))
     dynamic_partitions_diff.WriteScript(script, output_zip,
                                         write_verify_script=OPTIONS.verify)
   else:
@@ -671,11 +672,16 @@ def _WriteRecoveryImageToBoot(script, output_zip):
 
 def HasRecoveryPatch(target_files_zip, info_dict):
   board_uses_vendorimage = info_dict.get("board_uses_vendorimage") == "true"
+  board_builds_vendorimage = info_dict.get("board_builds_vendorimage") == "true"
+  target_files_dir = None
 
-  if board_uses_vendorimage:
+  if board_builds_vendorimage:
     target_files_dir = "VENDOR"
-  else:
+  elif not board_uses_vendorimage:
     target_files_dir = "SYSTEM/vendor"
+
+  if target_files_dir is None:
+    return True
 
   patch = "%s/recovery-from-boot.p" % target_files_dir
   img = "%s/etc/recovery.img" % target_files_dir

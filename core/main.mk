@@ -164,6 +164,10 @@ else
   endif
 endif
 
+#
+# -----------------------------------------------------------------
+# Add PixysOS generic properties to the build properties
+ADDITIONAL_SYSTEM_PROPERTIES += $(PRODUCT_GENERIC_PROPERTIES)
 
 # Bring in standard build system definitions.
 include $(BUILD_SYSTEM)/definitions.mk
@@ -367,7 +371,10 @@ endif
 
 ## user/userdebug ##
 
-user_variant := $(filter user userdebug,$(TARGET_BUILD_VARIANT))
+user_variant := user
+ifeq ($(TARGET_BUILD_VARIANT),eng)
+user_variant :=
+endif
 enable_target_debugging := true
 tags_to_install :=
 ifneq (,$(user_variant))
@@ -392,7 +399,7 @@ ifneq (,$(user_variant))
 
 else # !user_variant
   # Turn on checkjni for non-user builds.
-  ADDITIONAL_SYSTEM_PROPERTIES += ro.kernel.android.checkjni=1
+  # ADDITIONAL_SYSTEM_PROPERTIES += ro.kernel.android.checkjni=1
   # Set device insecure for non-user builds.
   ADDITIONAL_SYSTEM_PROPERTIES += ro.secure=0
   # Allow mock locations by default for non user builds

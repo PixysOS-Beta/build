@@ -427,7 +427,7 @@ class BuildInfo(object):
           "system_other"] = self._partition_fingerprints["system"]
 
     # These two should be computed only after setting self._oem_props.
-    self._device = self.GetOemProperty("ro.product.device")
+    self._device = info_dict.get("ota_override_device", self.GetOemProperty("ro.product.device"))
     self._fingerprint = self.CalculateFingerprint()
     check_fingerprint(self._fingerprint)
 
@@ -711,11 +711,14 @@ def ExtractFromInputFile(input_file, fn):
 class RamdiskFormat(object):
   LZ4 = 1
   GZ = 2
+  XZ = 3
 
 
 def _GetRamdiskFormat(info_dict):
   if info_dict.get('lz4_ramdisks') == 'true':
     ramdisk_format = RamdiskFormat.LZ4
+  if info_dict.get('xz_ramdisks') == 'true':
+    ramdisk_format = RamdiskFormat.XZ
   else:
     ramdisk_format = RamdiskFormat.GZ
   return ramdisk_format
@@ -1531,6 +1534,9 @@ def _MakeRamdisk(sourcedir, fs_config_file=None,
   if ramdisk_format == RamdiskFormat.LZ4:
     p2 = Run(["lz4", "-l", "-12", "--favor-decSpeed"], stdin=p1.stdout,
              stdout=ramdisk_img.file.fileno())
+  elif ramdisk_format == RamdiskFormat.XZ:
+    p2 = Run(["xz", "-f", "-c", "--check=crc32", "--lzma2=dict=32MiB"], stdin=p1.stdout,
+             stdout=ramdisk_img.file.fileno())
   elif ramdisk_format == RamdiskFormat.GZ:
     p2 = Run(["minigzip"], stdin=p1.stdout, stdout=ramdisk_img.file.fileno())
   else:
@@ -1616,6 +1622,11 @@ def _BuildBootableImage(image_name, sourcedir, fs_config_file, info_dict=None,
   if os.access(fn, os.F_OK):
     cmd.append("--pagesize")
     cmd.append(open(fn).read().rstrip("\n"))
+
+  fn = os.path.join(sourcedir, "dt")
+  if os.access(fn, os.F_OK):
+    cmd.append("--dt")
+    cmd.append(fn)
 
   if partition_name == "recovery":
     args = info_dict.get("recovery_mkbootimg_args")
@@ -2575,6 +2586,7 @@ class PasswordManager(object):
   def __init__(self):
     self.editor = os.getenv("EDITOR")
     self.pwfile = os.getenv("ANDROID_PW_FILE")
+    self.secure_storage_cmd = os.getenv("ANDROID_SECURE_STORAGE_CMD", None)
 
   def GetPasswords(self, items):
     """Get passwords corresponding to each string in 'items',
@@ -2594,9 +2606,23 @@ class PasswordManager(object):
       missing = []
       for i in items:
         if i not in current or not current[i]:
-          missing.append(i)
+          # Attempt to load using ANDROID_SECURE_STORAGE_CMD
+          if self.secure_storage_cmd:
+            try:
+              os.environ["TMP__KEY_FILE_NAME"] = str(i)
+              ps = subprocess.Popen(self.secure_storage_cmd, shell=True, stdout=subprocess.PIPE)
+              output = ps.communicate()[0]
+              if ps.returncode == 0:
+                current[i] = output
+            except Exception as e:
+              print(e)
+              pass
+          if i not in current or not current[i]:
+            missing.append(i)
       # Are all the passwords already in the file?
       if not missing:
+        if "ANDROID_SECURE_STORAGE_CMD" in os.environ:
+          del os.environ["ANDROID_SECURE_STORAGE_CMD"]
         return current
 
       for i in missing:
@@ -3478,12 +3504,10 @@ def MakeRecoveryPatch(input_dir, output_sink, recovery_img, boot_img,
     # In this case, the output sink is rooted at VENDOR
     recovery_img_path = "etc/recovery.img"
     recovery_resource_dat_path = "VENDOR/etc/recovery-resource.dat"
-    sh_dir = "bin"
   else:
     # In this case the output sink is rooted at SYSTEM
     recovery_img_path = "vendor/etc/recovery.img"
     recovery_resource_dat_path = "SYSTEM/vendor/etc/recovery-resource.dat"
-    sh_dir = "vendor/bin"
 
   if full_recovery_image:
     output_sink(recovery_img_path, recovery_img.data)
@@ -3566,11 +3590,7 @@ fi
 
   # The install script location moved from /system/etc to /system/bin in the L
   # release. In the R release it is in VENDOR/bin or SYSTEM/vendor/bin.
-  sh_location = os.path.join(sh_dir, "install-recovery.sh")
-
-  logger.info("putting script in %s", sh_location)
-
-  output_sink(sh_location, sh.encode())
+  output_sink("bin/install-recovery.sh", sh.encode())
 
 
 class DynamicPartitionUpdate(object):
@@ -3609,10 +3629,11 @@ class DynamicGroupUpdate(object):
 
 class DynamicPartitionsDifference(object):
   def __init__(self, info_dict, block_diffs, progress_dict=None,
-               source_info_dict=None):
+               source_info_dict=None, build_without_vendor=False):
     if progress_dict is None:
       progress_dict = {}
 
+    self._build_without_vendor = build_without_vendor
     self._remove_all_before_apply = False
     if source_info_dict is None:
       self._remove_all_before_apply = True
@@ -3736,6 +3757,17 @@ class DynamicPartitionsDifference(object):
 
     def comment(line):
       self._op_list.append("# %s" % line)
+
+    if self._build_without_vendor:
+      comment('System-only build, keep original vendor partition')
+      # When building without vendor, we do not want to override
+      # any partition already existing. In this case, we can only
+      # resize, but not remove / create / re-create any other
+      # partition.
+      for p, u in self._partition_updates.items():
+        comment('Resize partition %s to %s' % (p, u.tgt_size))
+        append('resize %s %s' % (p, u.tgt_size))
+      return
 
     if self._remove_all_before_apply:
       comment('Remove all existing dynamic partitions and groups before '
